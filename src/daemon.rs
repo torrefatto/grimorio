@@ -7,6 +7,7 @@ use clap::Parser;
 use crypto::{decrypt, encrypt, generate_key};
 use password::{PasswordReader, TerminalPasswordReader};
 use protocol::{Command, DaemonStatus, Response};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -27,14 +28,20 @@ struct Cli {
     timeout: u64,
 }
 
+/// One stored secret: its encrypted blob and the time it was last accessed.
+struct SecretEntry {
+    /// The encrypted secret blob.
+    blob: Vec<u8>,
+    /// Timestamp of the last successful decrypt (i.e. last `Get`) or store.
+    last_accessed: Instant,
+}
+
 /// All mutable daemon state, protected by a mutex for concurrent access.
 struct DaemonState {
     /// The AES-256 encryption key, generated at startup.
     key: [u8; 32],
-    /// The encrypted secret blob, if one is stored.
-    secret: Option<Vec<u8>>,
-    /// Timestamp of the last successful decrypt (i.e. last `Get`).
-    last_accessed: Option<Instant>,
+    /// The stored secrets, keyed by name.
+    secrets: HashMap<String, SecretEntry>,
     /// How long a secret may live without being accessed.
     timeout: Duration,
 }
@@ -43,30 +50,56 @@ impl DaemonState {
     fn new(key: [u8; 32], timeout: Duration) -> Self {
         Self {
             key,
-            secret: None,
-            last_accessed: None,
+            secrets: HashMap::new(),
             timeout,
         }
     }
 
     fn status(&self) -> DaemonStatus {
-        let (has_secret, last_accessed_secs_ago) = match (&self.secret, self.last_accessed) {
-            (Some(_), Some(instant)) => (true, instant.elapsed().as_secs()),
-            _ => (false, 0),
-        };
+        let mut keys: Vec<String> = self.secrets.keys().cloned().collect();
+        keys.sort();
+
+        let last_accessed_secs_ago = self
+            .secrets
+            .values()
+            .map(|e| e.last_accessed.elapsed().as_secs())
+            .min()
+            .unwrap_or(0);
 
         DaemonStatus {
-            has_secret,
+            has_secret: !self.secrets.is_empty(),
+            count: self.secrets.len(),
+            keys,
             last_accessed_secs_ago,
             timeout_secs: self.timeout.as_secs(),
         }
     }
 
-    fn is_expired(&self) -> bool {
-        match self.last_accessed {
-            Some(instant) => instant.elapsed() > self.timeout,
-            None => false,
+    /// Remove and zeroize every secret that has outlived the idle timeout.
+    /// Returns the number of secrets purged.
+    fn purge_expired(&mut self) -> usize {
+        let timeout = self.timeout;
+        let expired: Vec<String> = self
+            .secrets
+            .iter()
+            .filter(|(_, e)| e.last_accessed.elapsed() > timeout)
+            .map(|(k, _)| k.clone())
+            .collect();
+
+        for key in &expired {
+            if let Some(mut entry) = self.secrets.remove(key) {
+                entry.blob.zeroize();
+            }
         }
+        expired.len()
+    }
+
+    /// Remove and zeroize every stored secret.
+    fn purge_all(&mut self) {
+        for entry in self.secrets.values_mut() {
+            entry.blob.zeroize();
+        }
+        self.secrets.clear();
     }
 }
 
@@ -77,47 +110,61 @@ fn handle_command(
     _reader: &dyn PasswordReader,
 ) -> Response {
     match cmd {
-        Command::Set { secret } => {
+        Command::Set { key, secret } => {
             let blob = encrypt(&state.key, secret.as_bytes());
-            state.secret = Some(blob);
-            state.last_accessed = Some(Instant::now());
-            info!("secret stored");
+            state.secrets.insert(
+                key.clone(),
+                SecretEntry {
+                    blob,
+                    last_accessed: Instant::now(),
+                },
+            );
+            info!(key = %key, "secret stored");
             Response::Ok
         }
 
-        Command::Get => match &state.secret {
-            Some(blob) => match decrypt(&state.key, blob) {
-                Ok(plaintext) => {
-                    state.last_accessed = Some(Instant::now());
-                    // SAFETY: plaintext was originally a String, so it's valid UTF-8.
-                    let s = String::from_utf8(plaintext).unwrap_or_else(|e| {
-                        warn!("decrypted bytes are not valid UTF-8: {}", e);
-                        String::from_utf8_lossy(e.as_bytes()).into_owned()
-                    });
-                    info!("secret retrieved");
-                    Response::Secret(s)
-                }
-                Err(e) => {
-                    error!(?e, "decryption failed");
-                    Response::Error(format!("decryption failed: {e}"))
-                }
-            },
-            // The daemon is detached and has no terminal, so it never prompts.
-            // It reports the absence of a secret; the CLI owns any interaction.
-            None => Response::NoSecret,
-        },
+        Command::Get { key } => {
+            let daemon_key = state.key;
+            match state.secrets.get_mut(&key) {
+                Some(entry) => match decrypt(&daemon_key, &entry.blob) {
+                    Ok(plaintext) => {
+                        entry.last_accessed = Instant::now();
+                        // SAFETY: plaintext was originally a String, so it's valid UTF-8.
+                        let s = String::from_utf8(plaintext).unwrap_or_else(|e| {
+                            warn!("decrypted bytes are not valid UTF-8: {}", e);
+                            String::from_utf8_lossy(e.as_bytes()).into_owned()
+                        });
+                        info!(key = %key, "secret retrieved");
+                        Response::Secret(s)
+                    }
+                    Err(e) => {
+                        error!(?e, "decryption failed");
+                        Response::Error(format!("decryption failed: {e}"))
+                    }
+                },
+                // The daemon is detached and has no terminal, so it never prompts.
+                // It reports the absence of a secret; the CLI owns any interaction.
+                None => Response::NoSecret,
+            }
+        }
 
         Command::Status => Response::Status(state.status()),
 
-        Command::Purge => {
-            if let Some(ref mut blob) = state.secret {
-                blob.zeroize();
+        Command::Purge { key } => match key {
+            Some(key) => match state.secrets.remove(&key) {
+                Some(mut entry) => {
+                    entry.blob.zeroize();
+                    info!(key = %key, "secret purged");
+                    Response::Ok
+                }
+                None => Response::NoSecret,
+            },
+            None => {
+                state.purge_all();
+                info!("all secrets purged");
+                Response::Ok
             }
-            state.secret = None;
-            state.last_accessed = None;
-            info!("secret purged");
-            Response::Ok
-        }
+        },
     }
 }
 
@@ -127,13 +174,9 @@ async fn timeout_monitor(state: Arc<Mutex<DaemonState>>, check_interval: Duratio
         tokio::time::sleep(check_interval).await;
 
         let mut s = state.lock().await;
-        if s.is_expired() {
-            if let Some(ref mut blob) = s.secret {
-                blob.zeroize();
-            }
-            s.secret = None;
-            s.last_accessed = None;
-            info!("secret expired and was purged");
+        let purged = s.purge_expired();
+        if purged > 0 {
+            info!(count = purged, "expired secrets purged");
         }
     }
 }
@@ -183,14 +226,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     wait_for_shutdown_signal().await;
     info!("shutting down");
 
-    // Zeroize the key before exit.
+    // Zeroize every stored secret before exit.
     {
         let mut s = state.lock().await;
-        if let Some(ref mut blob) = s.secret {
-            blob.zeroize();
-        }
-        s.secret = None;
-        s.last_accessed = None;
+        s.purge_all();
     }
 
     ipc::cleanup_socket(&socket_path);

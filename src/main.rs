@@ -30,14 +30,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Store a secret (reads from stdin).
-    Set,
-    /// Retrieve the secret (prints to stdout).
-    Get,
+    /// Store a secret under KEY (reads the secret from stdin).
+    Set {
+        /// The key to store the secret under.
+        key: String,
+    },
+    /// Retrieve the secret stored under KEY (prints to stdout).
+    Get {
+        /// The key of the secret to retrieve.
+        key: String,
+    },
     /// Show daemon status.
     Status,
-    /// Immediately clear the stored secret.
-    Purge,
+    /// Clear the secret under KEY, or every secret when KEY is omitted.
+    Purge {
+        /// The key to clear. If omitted, clears all stored secrets.
+        key: Option<String>,
+    },
 }
 
 fn main() {
@@ -61,10 +70,10 @@ fn main() {
 
 fn dispatch(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     match &cli.command {
-        Commands::Set => cmd_set(&cli.socket),
-        Commands::Get => cmd_get(&cli.socket),
+        Commands::Set { key } => cmd_set(&cli.socket, key),
+        Commands::Get { key } => cmd_get(&cli.socket, key),
         Commands::Status => cmd_status(&cli.socket),
-        Commands::Purge => cmd_purge(&cli.socket),
+        Commands::Purge { key } => cmd_purge(&cli.socket, key.clone()),
     }
 }
 
@@ -118,7 +127,7 @@ fn send_command(socket: &PathBuf, cmd: &Command) -> Result<Response, String> {
 // Commands
 // ---------------------------------------------------------------------------
 
-fn cmd_set(socket: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_set(socket: &PathBuf, key: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut secret = String::new();
     std::io::stdin()
         .read_to_string(&mut secret)
@@ -127,7 +136,13 @@ fn cmd_set(socket: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     // Trim trailing newline(s) that may have been added by pipe.
     let secret = secret.trim_end_matches('\n').trim_end_matches('\r').to_string();
 
-    let response = send_command(socket, &Command::Set { secret })?;
+    let response = send_command(
+        socket,
+        &Command::Set {
+            key: key.to_string(),
+            secret,
+        },
+    )?;
     match response {
         Response::Ok => {
             println!("OK");
@@ -138,23 +153,34 @@ fn cmd_set(socket: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn cmd_get(socket: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let response = send_command(socket, &Command::Get)?;
+fn cmd_get(socket: &PathBuf, key: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let response = send_command(
+        socket,
+        &Command::Get {
+            key: key.to_string(),
+        },
+    )?;
     match response {
         Response::Secret(s) => {
             println!("{s}");
             Ok(())
         }
         Response::NoSecret => {
-            // The daemon holds nothing yet. Prompt here -- the CLI is the
-            // process attached to the terminal -- cache it in the daemon for
-            // future gets, then print the secret we just read.
+            // Nothing stored under this key yet. Prompt here -- the CLI is the
+            // process attached to the terminal -- cache it in the daemon under
+            // the same key for future gets, then print the secret we just read.
             let reader = TerminalPasswordReader;
             let secret = reader
-                .read_password("No secret stored. Enter secret: ")
+                .read_password(&format!("No secret stored for '{key}'. Enter secret: "))
                 .map_err(|e| format!("failed to read secret: {e}"))?;
 
-            match send_command(socket, &Command::Set { secret: secret.clone() })? {
+            match send_command(
+                socket,
+                &Command::Set {
+                    key: key.to_string(),
+                    secret: secret.clone(),
+                },
+            )? {
                 Response::Ok => {
                     println!("{secret}");
                     Ok(())
@@ -173,6 +199,8 @@ fn cmd_status(socket: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     match response {
         Response::Status(status) => {
             println!("has_secret: {}", status.has_secret);
+            println!("count: {}", status.count);
+            println!("keys: {}", status.keys.join(", "));
             println!("last_accessed_secs_ago: {}", status.last_accessed_secs_ago);
             println!("timeout_secs: {}", status.timeout_secs);
             Ok(())
@@ -182,13 +210,18 @@ fn cmd_status(socket: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn cmd_purge(socket: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let response = send_command(socket, &Command::Purge)?;
+fn cmd_purge(socket: &PathBuf, key: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    let missing = key.clone();
+    let response = send_command(socket, &Command::Purge { key })?;
     match response {
         Response::Ok => {
             println!("OK");
             Ok(())
         }
+        Response::NoSecret => match missing {
+            Some(k) => Err(format!("no secret stored for '{k}'").into()),
+            None => Err("no secret stored".into()),
+        },
         Response::Error(msg) => Err(msg.into()),
         other => Err(format!("unexpected response: {other:?}").into()),
     }

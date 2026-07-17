@@ -56,6 +56,27 @@ impl DaemonFixture {
             status: output.status.code(),
         }
     }
+
+    /// Store `secret` under `key` by piping it to `grimorio set KEY`.
+    fn set(&self, key: &str, secret: &str) {
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "printf '%s' '{}' | {} --socket {} set {}",
+                secret,
+                cli_bin().display(),
+                self.sock.display(),
+                key,
+            ))
+            .output()
+            .expect("failed to run set via shell");
+
+        assert!(
+            output.status.success(),
+            "set: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 impl Drop for DaemonFixture {
@@ -115,20 +136,9 @@ fn set_and_get_secret() {
     let daemon = DaemonFixture::start();
 
     let secret = "my-super-secret";
-    let set_result = Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "echo -n '{}' | {} --socket {} set",
-            secret,
-            cli_bin().display(),
-            daemon.socket().display()
-        ))
-        .output()
-        .expect("failed to run set via shell");
+    daemon.set("db", secret);
 
-    assert!(set_result.status.success(), "set: {}", String::from_utf8_lossy(&set_result.stderr));
-
-    let result = daemon.run(&["get"]);
+    let result = daemon.run(&["get", "db"]);
     assert!(result.status.is_some() && result.status.unwrap() == 0, "get: {}", result.stderr);
     assert_eq!(result.stdout.trim(), secret);
 }
@@ -141,7 +151,7 @@ fn get_when_no_secret_prompts_and_returns() {
     let result = Command::new("sh")
         .arg("-c")
         .arg(format!(
-            "echo -n '{}' | {} --socket {} get",
+            "printf '%s' '{}' | {} --socket {} get api",
             secret,
             cli_bin().display(),
             daemon.socket().display()
@@ -151,23 +161,19 @@ fn get_when_no_secret_prompts_and_returns() {
 
     assert!(result.status.success(), "get: {}", String::from_utf8_lossy(&result.stderr));
     assert_eq!(String::from_utf8_lossy(&result.stdout).trim(), secret);
+
+    // The prompted secret should now be cached under that key.
+    let cached = daemon.run(&["get", "api"]);
+    assert_eq!(cached.stdout.trim(), secret);
 }
 
 #[test]
 fn purge_secret() {
     let daemon = DaemonFixture::start();
 
-    Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "echo -n 'to-be-purged' | {} --socket {} set",
-            cli_bin().display(),
-            daemon.socket().display()
-        ))
-        .output()
-        .expect("set failed");
+    daemon.set("db", "to-be-purged");
 
-    let result = daemon.run(&["purge"]);
+    let result = daemon.run(&["purge", "db"]);
     assert_eq!(result.status.unwrap(), 0);
     assert_eq!(result.stdout.trim(), "OK");
 
@@ -182,18 +188,12 @@ fn status_reflects_secret_state() {
     let result = daemon.run(&["status"]);
     assert!(result.stdout.contains("has_secret: false"));
 
-    Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "echo -n 's3cret' | {} --socket {} set",
-            cli_bin().display(),
-            daemon.socket().display()
-        ))
-        .output()
-        .expect("set failed");
+    daemon.set("db", "s3cret");
 
     let result = daemon.run(&["status"]);
     assert!(result.stdout.contains("has_secret: true"));
+    assert!(result.stdout.contains("count: 1"));
+    assert!(result.stdout.contains("keys: db"));
     assert!(result.stdout.contains("last_accessed_secs_ago: 0"));
 }
 
@@ -201,21 +201,34 @@ fn status_reflects_secret_state() {
 fn secret_survives_multiple_gets() {
     let daemon = DaemonFixture::start();
 
-    Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "echo -n 'persistent' | {} --socket {} set",
-            cli_bin().display(),
-            daemon.socket().display()
-        ))
-        .output()
-        .expect("set failed");
+    daemon.set("db", "persistent");
 
     for _ in 0..3 {
-        let result = daemon.run(&["get"]);
+        let result = daemon.run(&["get", "db"]);
         assert_eq!(result.status.unwrap(), 0);
         assert_eq!(result.stdout.trim(), "persistent");
     }
+}
+
+#[test]
+fn multiple_keys_are_independent() {
+    let daemon = DaemonFixture::start();
+
+    daemon.set("db", "db-secret");
+    daemon.set("api", "api-secret");
+
+    assert_eq!(daemon.run(&["get", "db"]).stdout.trim(), "db-secret");
+    assert_eq!(daemon.run(&["get", "api"]).stdout.trim(), "api-secret");
+
+    let status = daemon.run(&["status"]);
+    assert!(status.stdout.contains("count: 2"));
+
+    // Purging one key leaves the other intact.
+    daemon.run(&["purge", "db"]);
+    let status = daemon.run(&["status"]);
+    assert!(status.stdout.contains("count: 1"));
+    assert!(status.stdout.contains("keys: api"));
+    assert_eq!(daemon.run(&["get", "api"]).stdout.trim(), "api-secret");
 }
 
 #[test]
