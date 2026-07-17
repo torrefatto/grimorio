@@ -1,0 +1,34 @@
+# systemd user service for grimoriod.
+#
+# This is a *user* unit: it runs inside your login session, under your UID, with
+# access to your HOME. That matches grimorio's model of a per-user, in-memory
+# secret store. Do not install it as a system unit.
+#
+# Install: see contrib/README.md.
+
+[Unit]
+Description=grimorio secret daemon
+Documentation=https://github.com/your-org/grimorio
+After=default.target
+
+[Service]
+Type=simple
+
+# The daemon does not create the socket's parent directory, so ensure it exists.
+ExecStartPre=/bin/mkdir -p %h/.grimorio
+
+# Adjust the path if grimoriod is not on ~/.cargo/bin.
+# The default socket path (~/.grimorio/grimorio.sock) is derived from $HOME.
+ExecStart=%h/.cargo/bin/grimoriod --timeout 300
+
+Restart=on-failure
+RestartSec=1
+
+# Light hardening. Uncomment more if your environment allows it.
+NoNewPrivileges=true
+# ProtectSystem=strict
+# ProtectHome=read-only
+# ReadWritePaths=%h/.grimorio
+
+[Install]
+WantedBy=default.target

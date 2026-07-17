@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd LaunchAgent for grimoriod (per-user, runs in the user's login session).
+
+  Before use, replace every occurrence of YOUR_USERNAME with your macOS short
+  user name (run `id -un` to find it). launchd does not expand `~` or environment
+  variables in paths, so absolute paths are required.
+
+  Install: see contrib/README.md.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.grimorio.grimoriod</string>
+
+    <!-- Absolute path to the daemon binary + arguments.
+         `cargo install --path .` puts it in ~/.cargo/bin/grimoriod. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOUR_USERNAME/.cargo/bin/grimoriod</string>
+        <string>--timeout</string>
+        <string>300</string>
+    </array>
+
+    <!-- Start at login and restart if it exits. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Socket location. Must match what the CLI uses (GRIMORIO_SOCKET or the
+         default ~/.grimorio/grimorio.sock). -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>GRIMORIO_SOCKET</key>
+        <string>/Users/YOUR_USERNAME/.grimorio/grimorio.sock</string>
+    </dict>
+
+    <!-- Logs. The ~/.grimorio directory must exist (see README). -->
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USERNAME/.grimorio/grimoriod.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USERNAME/.grimorio/grimoriod.log</string>
+</dict>
+</plist>
