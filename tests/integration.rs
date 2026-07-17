@@ -1,3 +1,8 @@
+// These tests drive the real daemon over a Unix domain socket and use
+// Unix-only APIs (socket file permissions). The Windows named-pipe transport is
+// covered by unit tests in `src/ipc/windows.rs`.
+#![cfg(unix)]
+
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};

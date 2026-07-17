@@ -236,15 +236,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Resolve the socket path: GRIMORIO_SOCKET env var, then ~/.grimorio/grimorio.sock.
+/// Resolve the default IPC endpoint: GRIMORIO_SOCKET if set, otherwise a Unix
+/// socket under ~/.grimorio (Unix) or a per-user named pipe (Windows).
 fn socket_socket_path() -> &'static std::ffi::OsStr {
     static PATH: std::sync::OnceLock<std::ffi::OsString> = std::sync::OnceLock::new();
     let path = PATH.get_or_init(|| {
-        let p = if let Ok(val) = std::env::var("GRIMORIO_SOCKET") {
-            PathBuf::from(val)
-        } else {
+        if let Ok(val) = std::env::var("GRIMORIO_SOCKET") {
+            return PathBuf::from(val).into_os_string();
+        }
+        #[cfg(unix)]
+        let p = {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
             PathBuf::from(home).join(".grimorio").join("grimorio.sock")
+        };
+        #[cfg(windows)]
+        let p = {
+            let user = std::env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
+            PathBuf::from(format!(r"\\.\pipe\grimorio-{user}"))
         };
         p.into_os_string()
     });

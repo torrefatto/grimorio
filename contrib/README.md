@@ -102,11 +102,12 @@ systemctl --user daemon-reload
 
 ## Windows (Task Scheduler)
 
-> **Caveat:** grimorio's IPC currently uses Unix domain sockets
-> (`src/ipc.rs`), which only build on Unix targets, so `grimoriod` does not
-> compile for native Windows yet. Run it under **WSL** (and use the Linux
-> instructions above), or treat the script below as the scheduling template for
-> when a Windows named-pipe transport lands.
+> **Note:** On Windows the IPC uses a named pipe
+> (`\\.\pipe\grimorio-<username>`) instead of a Unix socket; override it with
+> `GRIMORIO_SOCKET` or `--socket`. This transport has not yet been exercised on
+> a real Windows host, so treat the Windows path as experimental — if you hit
+> trouble, running under **WSL** with the Linux instructions above is the
+> proven route.
 
 1. Build/install so `grimoriod.exe` exists (edit `$Exe` in the script if needed).
 2. Register a task that starts the daemon at logon:

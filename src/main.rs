@@ -9,7 +9,6 @@ use password::{PasswordReader, TerminalPasswordReader};
 use protocol::{Command, Response};
 use std::io::Read;
 use std::path::PathBuf;
-use tokio::io::AsyncWriteExt;
 use tracing::error;
 
 /// A daemon that keeps a secret encrypted in memory.
@@ -85,39 +84,14 @@ fn send_command(socket: &PathBuf, cmd: &Command) -> Result<Response, String> {
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("tokio: {e}"))?;
 
     rt.block_on(async {
-        let stream =
-            tokio::net::UnixStream::connect(socket)
-                .await
-                .map_err(|e| {
-                    cleanup_socket(socket);
-                    format!("cannot connect to daemon at {}: {e}", socket.display())
-                })?;
+        let request = serde_json::to_string(cmd).unwrap();
 
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = tokio::io::BufReader::new(reader);
-
-        // Send command.
-        let line = serde_json::to_string(cmd).unwrap();
-        writer
-            .write_all(line.as_bytes())
-            .await
-            .map_err(|e| format!("write error: {e}"))?;
-        writer
-            .write_all(b"\n")
-            .await
-            .map_err(|e| format!("write error: {e}"))?;
-        writer
-            .flush()
-            .await
-            .map_err(|e| format!("flush error: {e}"))?;
-
-        // Read response.
-        use tokio::io::AsyncBufReadExt;
-        let mut response_line = String::new();
-        reader
-            .read_line(&mut response_line)
-            .await
-            .map_err(|e| format!("read error: {e}"))?;
+        let response_line = ipc::send_line(socket, &request).await.map_err(|e| {
+            // A failed exchange usually means the daemon is not running; drop any
+            // stale socket artifact so a fresh daemon can bind cleanly.
+            cleanup_socket(socket);
+            format!("cannot connect to daemon at {}: {e}", socket.display())
+        })?;
 
         serde_json::from_str(&response_line).map_err(|e| format!("invalid response: {e}"))
     })
@@ -231,14 +205,23 @@ fn cmd_purge(socket: &PathBuf, key: Option<String>) -> Result<(), Box<dyn std::e
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Default IPC endpoint. On Unix this is a socket path under `~/.grimorio`; on
+/// Windows it is a per-user named pipe. `--socket` / `GRIMORIO_SOCKET` override
+/// it on both platforms.
 fn default_socket_path() -> &'static std::ffi::OsStr {
     static PATH: std::sync::OnceLock<std::ffi::OsString> = std::sync::OnceLock::new();
     let path = PATH.get_or_init(|| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(home)
-            .join(".grimorio")
-            .join("grimorio.sock")
-            .into_os_string()
+        #[cfg(unix)]
+        let p = {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            PathBuf::from(home).join(".grimorio").join("grimorio.sock")
+        };
+        #[cfg(windows)]
+        let p = {
+            let user = std::env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
+            PathBuf::from(format!(r"\\.\pipe\grimorio-{user}"))
+        };
+        p.into_os_string()
     });
     path.as_os_str()
 }
