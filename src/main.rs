@@ -38,6 +38,9 @@ enum Commands {
     Get {
         /// The key of the secret to retrieve.
         key: String,
+        /// Shell command evaluated to produce the secret when none is stored
+        /// under KEY. Its stdout replaces the interactive stdin prompt.
+        source: Option<String>,
     },
     /// Show daemon status.
     Status,
@@ -70,7 +73,7 @@ fn main() {
 fn dispatch(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     match &cli.command {
         Commands::Set { key } => cmd_set(&cli.socket, key),
-        Commands::Get { key } => cmd_get(&cli.socket, key),
+        Commands::Get { key, source } => cmd_get(&cli.socket, key, source.as_deref()),
         Commands::Status => cmd_status(&cli.socket),
         Commands::Purge { key } => cmd_purge(&cli.socket, key.clone()),
     }
@@ -127,7 +130,11 @@ fn cmd_set(socket: &PathBuf, key: &str) -> Result<(), Box<dyn std::error::Error>
     }
 }
 
-fn cmd_get(socket: &PathBuf, key: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_get(
+    socket: &PathBuf,
+    key: &str,
+    source: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let response = send_command(
         socket,
         &Command::Get {
@@ -140,13 +147,16 @@ fn cmd_get(socket: &PathBuf, key: &str) -> Result<(), Box<dyn std::error::Error>
             Ok(())
         }
         Response::NoSecret => {
-            // Nothing stored under this key yet. Prompt here -- the CLI is the
-            // process attached to the terminal -- cache it in the daemon under
-            // the same key for future gets, then print the secret we just read.
-            let reader = TerminalPasswordReader;
-            let secret = reader
-                .read_password(&format!("No secret stored for '{key}'. Enter secret: "))
-                .map_err(|e| format!("failed to read secret: {e}"))?;
+            // Nothing stored under this key yet. The CLI owns any interaction,
+            // so acquire the secret here -- from the evaluated source command if
+            // one was given, otherwise by prompting on the terminal -- then
+            // cache it in the daemon under the same key and print it.
+            let secret = match source {
+                Some(cmd) => eval_source(cmd)?,
+                None => TerminalPasswordReader
+                    .read_password(&format!("No secret stored for '{key}'. Enter secret: "))
+                    .map_err(|e| format!("failed to read secret: {e}"))?,
+            };
 
             match send_command(
                 socket,
@@ -166,6 +176,49 @@ fn cmd_get(socket: &PathBuf, key: &str) -> Result<(), Box<dyn std::error::Error>
         Response::Error(msg) => Err(msg.into()),
         other => Err(format!("unexpected response: {other:?}").into()),
     }
+}
+
+/// Evaluate `source` as a shell command and return its stdout as the secret.
+///
+/// On Unix the user's login shell (`$SHELL`, falling back to `/bin/sh`) is run
+/// interactively (`-i`) so their rc files -- and thus custom functions and
+/// aliases -- are in scope, matching what they would get typing the command
+/// themselves. On Windows the command runs through `cmd /C`. A trailing newline
+/// is trimmed so `echo`-style sources behave like a piped `set`.
+fn eval_source(source: &str) -> Result<String, String> {
+    use std::process::Stdio;
+
+    #[cfg(unix)]
+    let mut command = {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let mut c = std::process::Command::new(shell);
+        c.arg("-i").arg("-c").arg(source);
+        c
+    };
+    #[cfg(windows)]
+    let mut command = {
+        let mut c = std::process::Command::new("cmd");
+        c.arg("/C").arg(source);
+        c
+    };
+
+    // Capture stdout (the secret) but let the command inherit the terminal for
+    // stdin and stderr. This lets an interactive source -- e.g. a password
+    // manager that prompts for a master password or a touch -- actually reach
+    // the user, instead of silently reading EOF from a closed stdin and
+    // "succeeding" with an empty secret.
+    let output = command
+        .stdout(Stdio::piped())
+        .spawn()
+        .and_then(|child| child.wait_with_output())
+        .map_err(|e| format!("failed to run source command: {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!("source command failed ({})", output.status));
+    }
+
+    let secret = String::from_utf8_lossy(&output.stdout);
+    Ok(secret.trim_end_matches('\n').trim_end_matches('\r').to_string())
 }
 
 fn cmd_status(socket: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {

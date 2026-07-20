@@ -173,6 +173,46 @@ fn get_when_no_secret_prompts_and_returns() {
 }
 
 #[test]
+fn get_evaluates_source_when_no_secret() {
+    let daemon = DaemonFixture::start();
+
+    // No secret stored for 'api'; the source command is evaluated and its
+    // stdout is used, cached, and printed.
+    let result = daemon.run(&["get", "api", "printf sourced-secret"]);
+    assert!(
+        result.status.is_some() && result.status.unwrap() == 0,
+        "get: {}",
+        result.stderr
+    );
+    assert_eq!(result.stdout.trim(), "sourced-secret");
+
+    // The evaluated secret is now cached; a plain get returns it and must not
+    // re-run the source.
+    let cached = daemon.run(&["get", "api", "printf different"]);
+    assert_eq!(cached.stdout.trim(), "sourced-secret");
+}
+
+#[test]
+fn get_source_ignored_when_secret_present() {
+    let daemon = DaemonFixture::start();
+
+    daemon.set("db", "stored-secret");
+
+    // A source is supplied but a secret already exists, so the source is not run.
+    let result = daemon.run(&["get", "db", "printf should-not-run"]);
+    assert_eq!(result.stdout.trim(), "stored-secret");
+}
+
+#[test]
+fn get_reports_failing_source() {
+    let daemon = DaemonFixture::start();
+
+    let result = daemon.run(&["get", "api", "exit 3"]);
+    assert_ne!(result.status.unwrap(), 0);
+    assert!(result.stderr.contains("source command failed"));
+}
+
+#[test]
 fn purge_secret() {
     let daemon = DaemonFixture::start();
 
