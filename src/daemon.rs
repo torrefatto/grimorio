@@ -104,11 +104,7 @@ impl DaemonState {
 }
 
 /// Handle a single command. Pure function of current state -> (response, new_state).
-fn handle_command(
-    state: &mut DaemonState,
-    cmd: Command,
-    _reader: &dyn PasswordReader,
-) -> Response {
+fn handle_command(state: &mut DaemonState, cmd: Command, _reader: &dyn PasswordReader) -> Response {
     match cmd {
         Command::Set { key, secret } => {
             let blob = encrypt(&state.key, secret.as_bytes());

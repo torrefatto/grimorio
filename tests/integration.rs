@@ -132,7 +132,11 @@ fn temp_socket_path() -> PathBuf {
 fn status_empty_daemon() {
     let daemon = DaemonFixture::start();
     let result = daemon.run(&["status"]);
-    assert!(result.status.is_some() && result.status.unwrap() == 0, "status: {}", result.stderr);
+    assert!(
+        result.status.is_some() && result.status.unwrap() == 0,
+        "status: {}",
+        result.stderr
+    );
     assert!(result.stdout.contains("has_secret: false"));
 }
 
@@ -144,7 +148,11 @@ fn set_and_get_secret() {
     daemon.set("db", secret);
 
     let result = daemon.run(&["get", "db"]);
-    assert!(result.status.is_some() && result.status.unwrap() == 0, "get: {}", result.stderr);
+    assert!(
+        result.status.is_some() && result.status.unwrap() == 0,
+        "get: {}",
+        result.stderr
+    );
     assert_eq!(result.stdout.trim(), secret);
 }
 
@@ -164,7 +172,11 @@ fn get_when_no_secret_prompts_and_returns() {
         .output()
         .expect("failed to run get via shell");
 
-    assert!(result.status.success(), "get: {}", String::from_utf8_lossy(&result.stderr));
+    assert!(
+        result.status.success(),
+        "get: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     assert_eq!(String::from_utf8_lossy(&result.stdout).trim(), secret);
 
     // The prompted secret should now be cached under that key.

@@ -29,7 +29,9 @@ impl PasswordReader for TerminalPasswordReader {
         if !std::io::stdin().is_terminal() {
             let mut line = String::new();
             std::io::stdin().read_line(&mut line)?;
-            return Ok(line.trim_end_matches(|c| c == '\r' || c == '\n').to_string());
+            return Ok(line
+                .trim_end_matches(|c| c == '\r' || c == '\n')
+                .to_string());
         }
 
         #[cfg(unix)]
@@ -59,17 +61,14 @@ mod windows_sys {
         fn read_password_win(prompt: &str) -> Result<String, std::io::Error> {
             use std::io::Write;
             use windows_sys::Win32::System::Console::{
-                GetStdHandle, SetConsoleMode, CONSOLE_MODE, ENABLE_ECHO_INPUT,
-                ENABLE_LINE_INPUT, STD_INPUT_HANDLE,
+                GetStdHandle, SetConsoleMode, CONSOLE_MODE, ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT,
+                STD_INPUT_HANDLE,
             };
 
             unsafe {
                 let stdin = GetStdHandle(STD_INPUT_HANDLE);
                 let mut original_mode: CONSOLE_MODE = 0;
-                windows_sys::Win32::System::Console::GetConsoleMode(
-                    stdin,
-                    &mut original_mode,
-                );
+                windows_sys::Win32::System::Console::GetConsoleMode(stdin, &mut original_mode);
 
                 // Disable echo
                 let no_echo = (original_mode & !ENABLE_ECHO_INPUT) | ENABLE_LINE_INPUT;
@@ -84,7 +83,9 @@ mod windows_sys {
                 // Restore original mode
                 SetConsoleMode(stdin, original_mode);
 
-                Ok(buffer.trim_end_matches(|c| c == '\r' || c == '\n').to_string())
+                Ok(buffer
+                    .trim_end_matches(|c| c == '\r' || c == '\n')
+                    .to_string())
             }
         }
     }

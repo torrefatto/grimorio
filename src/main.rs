@@ -111,7 +111,10 @@ fn cmd_set(socket: &PathBuf, key: &str) -> Result<(), Box<dyn std::error::Error>
         .map_err(|e| format!("failed to read stdin: {e}"))?;
 
     // Trim trailing newline(s) that may have been added by pipe.
-    let secret = secret.trim_end_matches('\n').trim_end_matches('\r').to_string();
+    let secret = secret
+        .trim_end_matches('\n')
+        .trim_end_matches('\r')
+        .to_string();
 
     let response = send_command(
         socket,
@@ -218,7 +221,10 @@ fn eval_source(source: &str) -> Result<String, String> {
     }
 
     let secret = String::from_utf8_lossy(&output.stdout);
-    Ok(secret.trim_end_matches('\n').trim_end_matches('\r').to_string())
+    Ok(secret
+        .trim_end_matches('\n')
+        .trim_end_matches('\r')
+        .to_string())
 }
 
 fn cmd_status(socket: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {

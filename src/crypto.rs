@@ -44,7 +44,9 @@ pub fn generate_key() -> [u8; KEY_SIZE] {
 pub fn encrypt(key: &[u8; KEY_SIZE], plaintext: &[u8]) -> Vec<u8> {
     let cipher = Aes256Gcm::new_from_slice(key).expect("valid key size");
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-    let ciphertext = cipher.encrypt(&nonce, plaintext).expect("encryption failed");
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext)
+        .expect("encryption failed");
 
     // Prepend nonce to ciphertext: [nonce (12 bytes) | ciphertext]
     let mut blob = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
